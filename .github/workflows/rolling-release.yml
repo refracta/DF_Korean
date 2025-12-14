@@ -65,10 +65,12 @@ jobs:
             exit 1
           fi
 
+          SHORT_SHA="${GITHUB_SHA::7}"
+
           bash scripts/release.sh upload \
             -r "${{ github.repository }}" \
             -n "DF_Korean" \
-            -T "DF_Korean (rolling)" \
+            -T "DF_Korean (${SHORT_SHA})" \
             -b "${{ github.sha }}" \
             -p "$ZIP_PATH"
 
