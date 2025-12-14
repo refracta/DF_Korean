@@ -1,0 +1,61 @@
+name: rolling-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rolling-release-main
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup MSVC dev cmd (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build + package
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1 -Configuration Release -Platform x64
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DF_Korean.zip
+          path: dist/DF_Korean.zip
+
+      - name: Create release (rolling)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/release.sh upload \
+            -r "${{ github.repository }}" \
+            -n "DF_Korean" \
+            -T "DF_Korean (rolling)" \
+            -b "${{ github.sha }}" \
+            -p "dist/DF_Korean.zip"
+
+      - name: Keep last 3 releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/release.sh delete \
+            -r "${{ github.repository }}" \
+            -n "DF_Korean" \
+            -l 3
