@@ -150,7 +150,7 @@ do_delete() {
 
   local prefix="${NAME}-"
   local tags
-  tags="$(gh api --paginate "repos/$REPO/releases" --jq ".[] | select(.tag_name | startswith(\\\"$prefix\\\")) | .tag_name")"
+  tags="$(gh api --paginate "repos/$REPO/releases" --jq ".[] | select(.tag_name | startswith(\"$prefix\")) | .tag_name")"
 
   local i=0
   while IFS= read -r tag; do
