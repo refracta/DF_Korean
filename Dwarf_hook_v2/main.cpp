@@ -1081,10 +1081,16 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     std::vector<wchar_t> wtext(w_len);
     MultiByteToWideChar(CP_UTF8, 0, text, -1, wtext.data(), w_len);
 
-    FT_Set_Pixel_Sizes(g_ft_face, 0, 12);
+    const int FONT_SIZE = 14;
+    FT_Set_Pixel_Sizes(g_ft_face, 0, FONT_SIZE);
+
+    int ascent = g_ft_face->size->metrics.ascender >> 6;
+    int descent = abs(g_ft_face->size->metrics.descender >> 6);
+    int line_height = ascent + descent;
+    if (line_height <= 0) line_height = FONT_SIZE;
 
     int tex_w = 0;
-    int tex_h = 16;
+    int tex_h = line_height + 2; // add small padding to avoid clipping
     int pen_x = 0;
 
     for (int i = 0; i < w_len - 1; i++) {
@@ -1103,7 +1109,7 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     SDL_UnlockSurface(surface);
 
     pen_x = 0;
-    int baseline = 15; // Should be changed depending on Y
+    int baseline = ascent + 1;
 
     SDL_LockSurface(surface);
     Uint32* pixels = (Uint32*)surface->pixels;
@@ -1111,7 +1117,7 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     int height = surface->h;
     const char* p = text;
 
-    while(*p) {
+    while (*p) {
         uint32_t unicode_char = 0;
         int step = GetNextUTF8Char(p, &unicode_char);
 
