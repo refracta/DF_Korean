@@ -1,20 +1,20 @@
-name: rolling-release
+name: upload-build
 
 on:
   push:
-    branches: [main]
+    branches:
+      - '**'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: rolling-release-main
+  group: upload-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
     steps:
       - name: Checkout
@@ -85,3 +85,4 @@ jobs:
             -r "${{ github.repository }}" \
             -n "DF_Korean" \
             -l 3
+
