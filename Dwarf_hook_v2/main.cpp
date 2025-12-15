@@ -194,6 +194,8 @@ int op_count = 0;
 const int TILE_WIDTH = 8;
 const int TILE_HEIGHT = 12;
 
+const int KOREAN_FONT_SIZE = 14;
+
 const int OFFSET_GPS_X = 456;
 const int OFFSET_GPS_Y = 456 + 4;
 
@@ -1081,17 +1083,32 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     std::vector<wchar_t> wtext(w_len);
     MultiByteToWideChar(CP_UTF8, 0, text, -1, wtext.data(), w_len);
 
-    FT_Set_Pixel_Sizes(g_ft_face, 0, 12);
+    FT_Set_Pixel_Sizes(g_ft_face, 0, KOREAN_FONT_SIZE);
+
+    int ascent = g_ft_face->size->metrics.ascender >> 6;
+    int descent = abs(g_ft_face->size->metrics.descender >> 6);
+    int tex_h = ascent + descent + 1;
 
     int tex_w = 0;
-    int tex_h = 16;
     int pen_x = 0;
+    FT_UInt prev_index = 0;
 
     for (int i = 0; i < w_len - 1; i++) {
-        if (FT_Load_Char(g_ft_face, wtext[i], FT_LOAD_DEFAULT)) continue;
+        FT_UInt glyph_index = FT_Get_Char_Index(g_ft_face, wtext[i]);
+
+        if (FT_Load_Glyph(g_ft_face, glyph_index, FT_LOAD_DEFAULT)) continue;
+
+        if (FT_HAS_KERNING(g_ft_face) && prev_index && glyph_index) {
+            FT_Vector kerning;
+            if (!FT_Get_Kerning(g_ft_face, prev_index, glyph_index, FT_KERNING_DEFAULT, &kerning)) {
+                pen_x += (kerning.x >> 6);
+            }
+        }
+
         pen_x += (g_ft_face->glyph->advance.x >> 6);
+        prev_index = glyph_index;
     }
-    tex_w = pen_x + 5;
+    tex_w = pen_x + 6;
 
     if (tex_w <= 0) return NULL;
 
@@ -1103,7 +1120,8 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     SDL_UnlockSurface(surface);
 
     pen_x = 0;
-    int baseline = 15; // Should be changed depending on Y
+    int baseline = ascent;
+    prev_index = 0;
 
     SDL_LockSurface(surface);
     Uint32* pixels = (Uint32*)surface->pixels;
@@ -1115,7 +1133,16 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
         uint32_t unicode_char = 0;
         int step = GetNextUTF8Char(p, &unicode_char);
 
-        if (FT_Load_Char(g_ft_face, unicode_char, FT_LOAD_RENDER)) continue;
+        FT_UInt glyph_index = FT_Get_Char_Index(g_ft_face, unicode_char);
+
+        if (FT_Load_Glyph(g_ft_face, glyph_index, FT_LOAD_RENDER)) continue;
+
+        if (FT_HAS_KERNING(g_ft_face) && prev_index && glyph_index) {
+            FT_Vector kerning;
+            if (!FT_Get_Kerning(g_ft_face, prev_index, glyph_index, FT_KERNING_DEFAULT, &kerning)) {
+                pen_x += (kerning.x >> 6);
+            }
+        }
 
         FT_Bitmap* bitmap = &g_ft_face->glyph->bitmap;
         int bearingX = g_ft_face->glyph->bitmap_left;
@@ -1138,6 +1165,7 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
         }
         p += step;
         pen_x += (g_ft_face->glyph->advance.x >> 6);
+        prev_index = glyph_index;
     }
     SDL_UnlockSurface(surface);
 
