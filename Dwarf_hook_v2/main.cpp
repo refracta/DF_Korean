@@ -22,6 +22,9 @@ using namespace std;
 # define LINE_HEIGHT 12
 # define PARA_GAP    20
 
+const int FONT_PIXEL_SIZE = 14;
+const int FONT_PADDING = 2;
+
 // =========================================================
 // 1. Global Values
 // =========================================================
@@ -380,12 +383,15 @@ void __fastcall DetourPtrst(void* gps, void* arg2, size_t a3, size_t a4) {
 
                     int screen_pixel_w = screen_grid_w * tile_w;
 
-                    int text_pixel_w = (int)korText.length() / 3 * tile_w;
+                    int text_pixel_w = MeasureKoreanTextWidth(korText);
+                    if (text_pixel_w <= 0) text_pixel_w = (int)korText.length() / 3 * tile_w;
                     final_pixel_x = (screen_pixel_w / 2) - (text_pixel_w / 2);
                 }
                 else if (*(int*)a3 == 2) {
                     int screen_grid_w = *(int*)((char*)gps + 0x28C);
-                    final_pixel_x = (screen_grid_w * tile_w) - ((int)korText.length() / 3 * tile_w);
+                    int text_pixel_w = MeasureKoreanTextWidth(korText);
+                    if (text_pixel_w <= 0) text_pixel_w = (int)korText.length() / 3 * tile_w;
+                    final_pixel_x = (screen_grid_w * tile_w) - text_pixel_w;
                 }
                 else {
                     final_pixel_x = grid_x * tile_w;
@@ -468,12 +474,15 @@ void __fastcall DetourAddst(void* gps, MSVC_String* src, uint8_t justify, uint32
             if (screen_grid_w == 0) screen_grid_w = 149;
 
             int screen_pixel_w = screen_grid_w * tile_w;
-            int text_pixel_w = (int)korText.length() / 3 * tile_w;
+            int text_pixel_w = MeasureKoreanTextWidth(korText);
+            if (text_pixel_w <= 0) text_pixel_w = (int)korText.length() / 3 * tile_w;
             final_pixel_x = (screen_pixel_w / 2) - (text_pixel_w / 2);
         }
         else if (justify == 2) {
             int screen_grid_w = *(int*)((char*)gps + 0x28C);
-            final_pixel_x = (screen_grid_w * tile_w) - ((int)korText.length() / 3 * tile_w);
+            int text_pixel_w = MeasureKoreanTextWidth(korText);
+            if (text_pixel_w <= 0) text_pixel_w = (int)korText.length() / 3 * tile_w;
+            final_pixel_x = (screen_grid_w * tile_w) - text_pixel_w;
         }
         else {
             final_pixel_x = grid_x * tile_w;
@@ -1073,6 +1082,50 @@ const char* FindTranslation(const char* original) {
     return NULL;
 }
 
+struct FontMetrics {
+    int ascent;
+    int descent;
+    int lineHeight;
+};
+
+FontMetrics GetFontMetrics() {
+    FontMetrics metrics{ 0, 0, 0 };
+
+    if (!g_ft_face) return metrics;
+
+    FT_Set_Pixel_Sizes(g_ft_face, 0, FONT_PIXEL_SIZE);
+    FT_Size_Metrics ftMetrics = g_ft_face->size->metrics;
+
+    metrics.ascent = static_cast<int>(ftMetrics.ascender >> 6);
+    metrics.descent = -static_cast<int>(ftMetrics.descender >> 6);
+    metrics.lineHeight = static_cast<int>(ftMetrics.height >> 6);
+
+    if (metrics.lineHeight <= 0) metrics.lineHeight = metrics.ascent + metrics.descent;
+
+    return metrics;
+}
+
+int MeasureKoreanTextWidth(const string& text) {
+    if (!g_ft_face || text.empty()) return 0;
+
+    int w_len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
+    if (w_len <= 0) return 0;
+
+    std::vector<wchar_t> wtext(w_len);
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wtext.data(), w_len);
+
+    FT_Set_Pixel_Sizes(g_ft_face, 0, FONT_PIXEL_SIZE);
+
+    int pen_x = 0;
+
+    for (int i = 0; i < w_len - 1; i++) {
+        if (FT_Load_Char(g_ft_face, wtext[i], FT_LOAD_DEFAULT)) continue;
+        pen_x += (g_ft_face->glyph->advance.x >> 6);
+    }
+
+    return pen_x + FONT_PADDING * 2;
+}
+
 SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out_w, int* out_h) {
     if (!g_ft_face || !text || !*text) return NULL;
 
@@ -1081,19 +1134,21 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     std::vector<wchar_t> wtext(w_len);
     MultiByteToWideChar(CP_UTF8, 0, text, -1, wtext.data(), w_len);
 
-    FT_Set_Pixel_Sizes(g_ft_face, 0, 12);
+    FT_Set_Pixel_Sizes(g_ft_face, 0, FONT_PIXEL_SIZE);
+
+    FontMetrics metrics = GetFontMetrics();
 
     int tex_w = 0;
-    int tex_h = 16;
+    int tex_h = max(metrics.lineHeight, metrics.ascent + metrics.descent) + FONT_PADDING * 2;
     int pen_x = 0;
 
     for (int i = 0; i < w_len - 1; i++) {
         if (FT_Load_Char(g_ft_face, wtext[i], FT_LOAD_DEFAULT)) continue;
         pen_x += (g_ft_face->glyph->advance.x >> 6);
     }
-    tex_w = pen_x + 5;
+    tex_w = pen_x + FONT_PADDING * 2;
 
-    if (tex_w <= 0) return NULL;
+    if (tex_w <= 0 || tex_h <= 0) return NULL;
 
     SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormat(0, tex_w, tex_h, 32, SDL_PIXELFORMAT_RGBA32);
     if (!surface) return NULL;
@@ -1103,7 +1158,7 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
     SDL_UnlockSurface(surface);
 
     pen_x = 0;
-    int baseline = 15; // Should be changed depending on Y
+    int baseline = FONT_PADDING + metrics.ascent;
 
     SDL_LockSurface(surface);
     Uint32* pixels = (Uint32*)surface->pixels;
@@ -1121,7 +1176,7 @@ SDL_Texture* GetKoreanTexture(SDL_Renderer* renderer, const char* text, int* out
         int bearingX = g_ft_face->glyph->bitmap_left;
         int bearingY = g_ft_face->glyph->bitmap_top;
 
-        int x_pos = pen_x + bearingX;
+        int x_pos = FONT_PADDING + pen_x + bearingX;
         int y_pos = baseline - bearingY;
 
         for (int y = 0; y < bitmap->rows; y++) {
