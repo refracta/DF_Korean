@@ -329,6 +329,18 @@ int main()
         return 1;
     }
 
+    printf(" - Preflight: attempting to LoadLibraryEx locally...\n");
+    HMODULE preflight = LoadLibraryExA(full_dll_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!preflight) {
+        printf("   -> Local LoadLibraryEx failed; this usually means a missing dependency.\n");
+        PrintLastErrorText(GetLastError());
+        printf("   -> Try copying missing DLLs next to Dwarf_hook.dll or reinstalling VC++ redistributables.\n");
+        system("pause");
+        return 1;
+    }
+    FreeLibrary(preflight);
+    printf("   -> Preflight load succeeded; continuing to remote injection.\n");
+
     printf("[2] Starting Game (Suspended)...\n");
     if (!CreateProcessA(NULL, TARGET_EXE, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
         printf("[Error] Failed to start '%s'. (Code: %d)\n", TARGET_EXE, GetLastError());

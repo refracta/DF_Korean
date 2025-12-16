@@ -10,6 +10,7 @@ Dwarf fortress korean Project
 - `api-ms-win-*` 또는 `ext-ms-win-*`로 시작하는 항목은 윈도우가 내부적으로 제공하는 API Set 이며 실제 파일이 없어도 됩니다.
 - `MinHook.x64.dll`처럼 지연 로드되거나 코드에서 동적으로 로드하는 DLL은 import table에 없을 수 있으므로, 런처가 별도로 존재 여부를 검사합니다.
 - 런처가 게임 프로세스 안에서 `SetDllDirectoryA(게임 폴더)`를 먼저 호출해 DLL 폴더를 검색 경로에 추가하므로, 의존 DLL을 게임 폴더에 두면 로더가 찾기 더 쉽습니다.
+- DLL 주입 전에 런처가 `LoadLibraryEx`로 `Dwarf_hook.dll`을 **로컬에서 미리 로드**해 보며, 여기서 실패하면 즉시 오류 코드가 출력되므로 부족한 의존 DLL을 확인할 수 있습니다.
 - 런처는 원격 스텁을 통해 `LoadLibraryA` 실행 직후의 `GetLastError` 값을 읽어 출력하므로, `Dwarf_hook.dll`의 `DllMain` 크래시나 의존성 누락 같은 원인을 직접 확인할 수 있습니다.
 - `Dwarf_hook.dll`과 함께 `MinHook.x64.dll` 등 의존 DLL이 같은 폴더에 있는지.
 - 런처와 DLL이 모두 x64로 빌드됐는지.
