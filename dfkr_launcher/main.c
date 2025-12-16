@@ -1,8 +1,53 @@
 ﻿#include <stdio.h>
 #include <windows.h>
+#include <tlhelp32.h>
+#include <stdbool.h>
+#include <string.h>
 
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
+
+bool TryIsModuleLoaded(DWORD processId, const char* moduleName, bool* isLoaded, DWORD* lastError)
+{
+    if (isLoaded) {
+        *isLoaded = false;
+    }
+    if (lastError) {
+        *lastError = ERROR_SUCCESS;
+    }
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        if (lastError) {
+            *lastError = GetLastError();
+        }
+        return false;
+    }
+
+    MODULEENTRY32 moduleEntry;
+    moduleEntry.dwSize = sizeof(MODULEENTRY32);
+
+    if (!Module32First(snapshot, &moduleEntry)) {
+        CloseHandle(snapshot);
+        if (lastError) {
+            *lastError = GetLastError();
+        }
+        return false;
+    }
+
+    do {
+        if (_stricmp(moduleEntry.szModule, moduleName) == 0) {
+            if (isLoaded) {
+                *isLoaded = true;
+            }
+            CloseHandle(snapshot);
+            return true;
+        }
+    } while (Module32Next(snapshot, &moduleEntry));
+
+    CloseHandle(snapshot);
+    return false;
+}
 
 
 int main()
@@ -72,21 +117,44 @@ int main()
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
 
-    if (exitCode == 0) {
-        printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
-        printf(" -> LoadLibrary returned NULL.\n");
-        printf(" -> Possible Causes:\n");
-        printf("    1. Missing Dependencies (Is MinHook.x64.dll in the folder?)\n");
-        printf("    2. Architecture Mismatch (Did you compile Launcher/DLL as x64?)\n");
+    bool dllLoaded = false;
+    DWORD moduleEnumError = ERROR_SUCCESS;
+    bool moduleCheckOk = TryIsModuleLoaded(pi.dwProcessId, MY_DLL_NAME, &dllLoaded, &moduleEnumError);
 
-        CloseHandle(hThread);
-        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
-        TerminateProcess(pi.hProcess, 1);
-        system("pause");
-        return 1;
+    // Retry once to avoid timing-related false negatives
+    if (!dllLoaded) {
+        Sleep(50);
+        moduleCheckOk = TryIsModuleLoaded(pi.dwProcessId, MY_DLL_NAME, &dllLoaded, &moduleEnumError) || moduleCheckOk;
     }
 
-    printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    if (exitCode == 0) {
+        if (dllLoaded) {
+            printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
+        }
+        else {
+            printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
+            printf(" -> LoadLibrary returned NULL.\n");
+            if (!moduleCheckOk) {
+                printf(" -> Could not verify loaded modules (Error Code: %lu).\n", moduleEnumError);
+                printf(" -> Try running the launcher with matching architecture/privileges.\n");
+            }
+            else {
+                printf(" -> DLL not detected in module list after injection attempt.\n");
+            }
+            printf(" -> Possible Causes:\n");
+            printf("    1. Missing Dependencies (Is MinHook.x64.dll in the folder?)\n");
+            printf("    2. Architecture Mismatch (Did you compile Launcher/DLL as x64?)\n");
+
+            CloseHandle(hThread);
+            VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
+            TerminateProcess(pi.hProcess, 1);
+            system("pause");
+            return 1;
+        }
+    }
+    else {
+        printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    }
 
     CloseHandle(hThread);
     VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
