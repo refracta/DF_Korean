@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
+#include <delayimp.h>
 
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
@@ -18,6 +19,38 @@ bool RvaToPointer(DWORD rva, BYTE* base, PIMAGE_NT_HEADERS64 nt, BYTE** out)
             *out = base + section->PointerToRawData + (rva - sectionStart);
             return true;
         }
+    }
+    return false;
+}
+
+bool CheckSingleDependency(const char* name, const char* dllDir, bool* outFound)
+{
+    if (strncmp(name, "api-ms-win-", 11) == 0 || strncmp(name, "ext-ms-win-", 11) == 0) {
+        printf("   -> %s : PROVIDED BY OS (API Set, usually virtual)\n", name);
+        if (outFound) {
+            *outFound = true;
+        }
+        return true;
+    }
+
+    char resolved[MAX_PATH];
+    bool foundNearby = SearchPathA(dllDir, name, NULL, MAX_PATH, resolved, NULL) != 0;
+    bool foundSystem = false;
+    if (!foundNearby) {
+        foundSystem = SearchPathA(NULL, name, NULL, MAX_PATH, resolved, NULL) != 0;
+    }
+
+    if (foundNearby || foundSystem) {
+        printf("   -> %s : FOUND (%s)\n", name, resolved);
+        if (outFound) {
+            *outFound = true;
+        }
+        return true;
+    }
+
+    printf("   -> %s : MISSING (copy to game folder)\n", name);
+    if (outFound) {
+        *outFound = false;
     }
     return false;
 }
@@ -81,6 +114,7 @@ bool CheckDllDependencies(const char* dllPath, const char* dllDir)
     }
 
     bool allFound = true;
+    bool minHookSeen = false;
     PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR)importPtr;
     printf(" - Dependency scan (from DLL import table):\n");
     for (; importDesc->Name != 0; ++importDesc) {
@@ -91,17 +125,48 @@ bool CheckDllDependencies(const char* dllPath, const char* dllDir)
             continue;
         }
 
-        char resolved[MAX_PATH];
-        bool foundNearby = SearchPathA(dllDir, (const char*)namePtr, NULL, MAX_PATH, resolved, NULL) != 0;
-        bool foundSystem = false;
-        if (!foundNearby) {
-            foundSystem = SearchPathA(NULL, (const char*)namePtr, NULL, MAX_PATH, resolved, NULL) != 0;
+        bool found = true;
+        if (!CheckSingleDependency((const char*)namePtr, dllDir, &found)) {
+            allFound = false;
         }
 
-        if (foundNearby || foundSystem) {
-            printf("   -> %s : FOUND (%s)\n", (const char*)namePtr, resolved);
+        if (_stricmp((const char*)namePtr, "MinHook.x64.dll") == 0) {
+            minHookSeen = true;
+        }
+    }
+
+    IMAGE_DATA_DIRECTORY delayImportDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    if (delayImportDir.Size && delayImportDir.VirtualAddress) {
+        BYTE* delayPtr = NULL;
+        if (!RvaToPointer(delayImportDir.VirtualAddress, view, nt, &delayPtr)) {
+            printf("   -> [Error] Could not resolve delay import directory RVA.\n");
+            allFound = false;
         } else {
-            printf("   -> %s : MISSING (copy to game folder)\n", (const char*)namePtr);
+            PIMAGE_DELAYLOAD_DESCRIPTOR delayDesc = (PIMAGE_DELAYLOAD_DESCRIPTOR)delayPtr;
+            for (; delayDesc->DllNameRVA != 0; ++delayDesc) {
+                BYTE* namePtr = NULL;
+                if (!RvaToPointer(delayDesc->DllNameRVA, view, nt, &namePtr)) {
+                    printf("   -> [Error] Could not resolve delay import name RVA.\n");
+                    allFound = false;
+                    continue;
+                }
+
+                bool found = true;
+                if (!CheckSingleDependency((const char*)namePtr, dllDir, &found)) {
+                    allFound = false;
+                }
+
+                if (_stricmp((const char*)namePtr, "MinHook.x64.dll") == 0) {
+                    minHookSeen = true;
+                }
+            }
+        }
+    }
+
+    if (!minHookSeen) {
+        printf("   -> (Note) MinHook.x64.dll not listed in imports; checking manually...\n");
+        bool found = true;
+        if (!CheckSingleDependency("MinHook.x64.dll", dllDir, &found)) {
             allFound = false;
         }
     }
