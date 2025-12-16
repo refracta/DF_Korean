@@ -69,8 +69,15 @@ int main()
 
     WaitForSingleObject(hThread, INFINITE);
 
-    DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
+    DWORD_PTR exitCode = 0;
+    if (!GetExitCodeThread(hThread, (LPDWORD)&exitCode)) {
+        printf("[Error] GetExitCodeThread failed. (Code: %lu)\n", GetLastError());
+        CloseHandle(hThread);
+        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
+        TerminateProcess(pi.hProcess, 1);
+        system("pause");
+        return 1;
+    }
 
     if (exitCode == 0) {
         printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
@@ -86,7 +93,7 @@ int main()
         return 1;
     }
 
-    printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    printf(" - Injection Result: SUCCESS (Handle: %p)\n", (void*)exitCode);
 
     CloseHandle(hThread);
     VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
