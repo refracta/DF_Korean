@@ -128,15 +128,21 @@ int main()
         Sleep(50);
     }
 
-    if (exitCode == 0) {
-        if (dllLoaded) {
-            printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
-        } else {
-            printf(" - Injection Result: SUCCESS (continuing; LoadLibrary returned 0 but module visibility not confirmed)\n");
-            if (snapshotError != 0) {
-                printf("   -> Module snapshot error: GetLastError() = %lu (try running as administrator).\n", snapshotError);
-            }
+    if (exitCode == 0 && !dllLoaded) {
+        printf(" - Injection Result: FAILURE (LoadLibrary returned 0 and module not visible)\n");
+        if (snapshotError != 0) {
+            printf("   -> Module snapshot error: GetLastError() = %lu (try running as administrator).\n", snapshotError);
         }
+        printf("   -> Check architecture matches (both launcher/DLL built as x64).\n");
+        printf("   -> Ensure MinHook.x64.dll and other dependencies are in the same folder.\n");
+        printf("   -> Security software may block injection; try whitelisting.\n");
+        CloseHandle(hThread);
+        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
+        TerminateProcess(pi.hProcess, 1);
+        system("pause");
+        return 1;
+    } else if (exitCode == 0 && dllLoaded) {
+        printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
     } else {
         printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
     }

@@ -8,3 +8,4 @@ Dwarf fortress korean Project
 - 여전히 실패한다면 다음을 확인하세요.
   - `Dwarf_hook.dll`과 함께 `MinHook.x64.dll` 등 의존 DLL이 같은 폴더에 있는지.
   - 런처와 DLL이 모두 x64로 빌드됐는지.
+  - `LoadLibrary`가 `0`을 반환하고 스냅샷에서도 모듈이 보이지 않으면 런처가 즉시 실패로 종료합니다. 이 경우 의존성, 권한(관리자) 또는 보안 도구 차단을 점검하세요.
