@@ -112,7 +112,7 @@ int main()
 
     bool dllLoaded = false;
     DWORD snapshotError = 0;
-    const int maxAttempts = 10;
+    const int maxAttempts = 40; // ~2 seconds of retry time at 50ms each
     for (int attempt = 0; attempt < maxAttempts; ++attempt) {
         dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME, &snapshotError);
         if (dllLoaded || snapshotError == ERROR_BAD_LENGTH) {
@@ -124,27 +124,17 @@ int main()
         Sleep(50);
     }
 
-    if (exitCode == 0 && !dllLoaded) {
-        printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
-        printf(" -> LoadLibrary returned NULL.\n");
-        printf(" -> Possible Causes:\n");
-        printf("    1. Missing Dependencies (Is MinHook.x64.dll in the folder?)\n");
-        printf("    2. Architecture Mismatch (Did you compile Launcher/DLL as x64?)\n");
-        if (snapshotError != 0) {
-            printf(" -> Module snapshot error: GetLastError() = %lu (try running as administrator).\n", snapshotError);
+    if (exitCode == 0) {
+        if (dllLoaded) {
+            printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
         } else {
-            printf(" -> DLL was not visible after %d checks; injection may still be blocked.\n", maxAttempts);
+            printf(" - Injection Result: WARNING (LoadLibrary returned 0 and module not visible after %d checks)\n", maxAttempts);
+            if (snapshotError != 0) {
+                printf("   -> Module snapshot error: GetLastError() = %lu (try running as administrator).\n", snapshotError);
+            } else {
+                printf("   -> Consider dependency/architecture issues or security software blocking visibility.\n");
+            }
         }
-
-        CloseHandle(hThread);
-        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
-        TerminateProcess(pi.hProcess, 1);
-        system("pause");
-        return 1;
-    }
-
-    if (exitCode == 0 && dllLoaded) {
-        printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
     }
     else {
         printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
