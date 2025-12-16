@@ -1,11 +1,116 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <windows.h>
 #include <tlhelp32.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdint.h>
 
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
+
+bool RvaToPointer(DWORD rva, BYTE* base, PIMAGE_NT_HEADERS64 nt, BYTE** out)
+{
+    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+        DWORD sectionStart = section->VirtualAddress;
+        DWORD sectionEnd = sectionStart + section->SizeOfRawData;
+        if (rva >= sectionStart && rva < sectionEnd) {
+            *out = base + section->PointerToRawData + (rva - sectionStart);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CheckDllDependencies(const char* dllPath, const char* dllDir)
+{
+    HANDLE file = CreateFileA(dllPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        printf("[Error] Could not open DLL for dependency scan (%lu).\n", GetLastError());
+        return false;
+    }
+
+    HANDLE mapping = CreateFileMappingA(file, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!mapping) {
+        printf("[Error] Could not create mapping for DLL (%lu).\n", GetLastError());
+        CloseHandle(file);
+        return false;
+    }
+
+    BYTE* view = (BYTE*)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!view) {
+        printf("[Error] Could not map DLL into memory (%lu).\n", GetLastError());
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return false;
+    }
+
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)view;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        printf("[Error] Invalid DOS signature in DLL.\n");
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return false;
+    }
+
+    PIMAGE_NT_HEADERS64 nt = (PIMAGE_NT_HEADERS64)(view + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        printf("[Error] Unexpected PE header (not a 64-bit DLL?).\n");
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return false;
+    }
+
+    IMAGE_DATA_DIRECTORY importDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (importDir.Size == 0 || importDir.VirtualAddress == 0) {
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return true; // no imports to check
+    }
+
+    BYTE* importPtr = NULL;
+    if (!RvaToPointer(importDir.VirtualAddress, view, nt, &importPtr)) {
+        printf("[Error] Could not resolve import directory RVA.\n");
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return false;
+    }
+
+    bool allFound = true;
+    PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR)importPtr;
+    printf(" - Dependency scan (from DLL import table):\n");
+    for (; importDesc->Name != 0; ++importDesc) {
+        BYTE* namePtr = NULL;
+        if (!RvaToPointer(importDesc->Name, view, nt, &namePtr)) {
+            printf("   -> [Error] Could not resolve import name RVA.\n");
+            allFound = false;
+            continue;
+        }
+
+        char resolved[MAX_PATH];
+        bool foundNearby = SearchPathA(dllDir, (const char*)namePtr, NULL, MAX_PATH, resolved, NULL) != 0;
+        bool foundSystem = false;
+        if (!foundNearby) {
+            foundSystem = SearchPathA(NULL, (const char*)namePtr, NULL, MAX_PATH, resolved, NULL) != 0;
+        }
+
+        if (foundNearby || foundSystem) {
+            printf("   -> %s : FOUND (%s)\n", (const char*)namePtr, resolved);
+        } else {
+            printf("   -> %s : MISSING (copy to game folder)\n", (const char*)namePtr);
+            allFound = false;
+        }
+    }
+
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+    CloseHandle(file);
+    return allFound;
+}
 
 bool IsModuleLoaded(DWORD processId, const char* moduleName, DWORD* snapshotError)
 {
@@ -71,6 +176,19 @@ int main()
         return 1;
     }
     printf(" - DLL Found: OK\n");
+
+    char dllDir[MAX_PATH];
+    strcpy_s(dllDir, MAX_PATH, full_dll_path);
+    char* lastSlash = strrchr(dllDir, '\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = '\0';
+    }
+
+    if (!CheckDllDependencies(full_dll_path, dllDir)) {
+        printf("[Error] Missing or unreadable dependency detected above; fix before launching.\n");
+        system("pause");
+        return 1;
+    }
 
     printf("[2] Starting Game (Suspended)...\n");
     if (!CreateProcessA(NULL, TARGET_EXE, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
