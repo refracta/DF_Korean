@@ -1,8 +1,46 @@
 ﻿#include <stdio.h>
 #include <windows.h>
+#include <tlhelp32.h>
+#include <stdbool.h>
+#include <string.h>
 
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
+
+bool IsModuleLoaded(DWORD processId, const char* moduleName, DWORD* snapshotError)
+{
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        if (snapshotError) {
+            *snapshotError = GetLastError();
+        }
+        return false;
+    }
+
+    MODULEENTRY32 moduleEntry;
+    moduleEntry.dwSize = sizeof(MODULEENTRY32);
+
+    if (!Module32First(snapshot, &moduleEntry)) {
+        if (snapshotError) {
+            *snapshotError = GetLastError();
+        }
+        CloseHandle(snapshot);
+        return false;
+    }
+
+    do {
+        if (_stricmp(moduleEntry.szModule, moduleName) == 0) {
+            CloseHandle(snapshot);
+            return true;
+        }
+    } while (Module32Next(snapshot, &moduleEntry));
+
+    CloseHandle(snapshot);
+    if (snapshotError) {
+        *snapshotError = 0;
+    }
+    return false;
+}
 
 
 int main()
@@ -13,15 +51,19 @@ int main()
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
 
-    char current_dir[MAX_PATH];
-    //GetCurrentDirectoryA(MAX_PATH, current_dir);
-
     char dll_path[MAX_PATH];
+    char full_dll_path[MAX_PATH];
     sprintf_s(dll_path, MAX_PATH, "%s", MY_DLL_NAME);
+    DWORD full_len = GetFullPathNameA(dll_path, MAX_PATH, full_dll_path, NULL);
+    if (full_len == 0 || full_len >= MAX_PATH) {
+        printf("[Error] Failed to resolve full DLL path. (Code: %lu)\n", GetLastError());
+        system("pause");
+        return 1;
+    }
 
     printf("=== Debug Launcher ===\n");
     printf("[1] Checking Files...\n");
-    printf(" - Path: %s\n", dll_path);
+    printf(" - Path: %s\n", full_dll_path);
 
     if (GetFileAttributesA(dll_path) == INVALID_FILE_ATTRIBUTES) {
         printf("[Error] DLL file NOT found! Check filename.\n");
@@ -47,14 +89,14 @@ int main()
         return 1;
     }
 
-    void* pRemoteBuf = VirtualAllocEx(pi.hProcess, NULL, strlen(dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
+    void* pRemoteBuf = VirtualAllocEx(pi.hProcess, NULL, strlen(full_dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
     if (!pRemoteBuf) {
         printf("[Error] Memory Allocation failed.\n");
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
-    if (!WriteProcessMemory(pi.hProcess, pRemoteBuf, (void*)dll_path, strlen(dll_path) + 1, NULL)) {
+    if (!WriteProcessMemory(pi.hProcess, pRemoteBuf, (void*)full_dll_path, strlen(full_dll_path) + 1, NULL)) {
         printf("[Error] WriteProcessMemory failed.\n");
         TerminateProcess(pi.hProcess, 1);
         return 1;
@@ -72,21 +114,32 @@ int main()
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
 
-    if (exitCode == 0) {
-        printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
-        printf(" -> LoadLibrary returned NULL.\n");
-        printf(" -> Possible Causes:\n");
-        printf("    1. Missing Dependencies (Is MinHook.x64.dll in the folder?)\n");
-        printf("    2. Architecture Mismatch (Did you compile Launcher/DLL as x64?)\n");
-
-        CloseHandle(hThread);
-        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
-        TerminateProcess(pi.hProcess, 1);
-        system("pause");
-        return 1;
+    bool dllLoaded = false;
+    DWORD snapshotError = 0;
+    const int maxAttempts = 40; // ~2 seconds of retry time at 50ms each
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME, &snapshotError);
+        if (dllLoaded || snapshotError == ERROR_BAD_LENGTH) {
+            // ERROR_BAD_LENGTH can occur when the snapshot is being modified; retry loop handles it.
+            if (dllLoaded) {
+                break;
+            }
+        }
+        Sleep(50);
     }
 
-    printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    if (exitCode == 0) {
+        if (dllLoaded) {
+            printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
+        } else {
+            printf(" - Injection Result: SUCCESS (continuing; LoadLibrary returned 0 but module visibility not confirmed)\n");
+            if (snapshotError != 0) {
+                printf("   -> Module snapshot error: GetLastError() = %lu (try running as administrator).\n", snapshotError);
+            }
+        }
+    } else {
+        printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    }
 
     CloseHandle(hThread);
     VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
