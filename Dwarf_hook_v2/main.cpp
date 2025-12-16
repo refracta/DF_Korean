@@ -1407,13 +1407,31 @@ DWORD WINAPI SetupHook(LPVOID lpParam) {
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
+    static bool isTargetProcess = false;
+    static bool targetProcessChecked = false;
+
     if (fdwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinstDLL);
-        CreateThread(NULL, 0, SetupHook, NULL, 0, NULL);
+        if (!targetProcessChecked) {
+            char exePath[MAX_PATH] = { 0 };
+            DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+            if (len > 0 && len < MAX_PATH) {
+                const char* base = strrchr(exePath, '\\');
+                base = base ? (base + 1) : exePath;
+                isTargetProcess = (_stricmp(base, "Dwarf Fortress.exe") == 0);
+            }
+            targetProcessChecked = true;
+        }
+
+        if (isTargetProcess) {
+            CreateThread(NULL, 0, SetupHook, NULL, 0, NULL);
+        }
     }
     else if (fdwReason == DLL_PROCESS_DETACH) {
-        if (log_file) fclose(log_file);
-        MH_Uninitialize();
+        if (isTargetProcess) {
+            if (log_file) fclose(log_file);
+            MH_Uninitialize();
+        }
     }
     return TRUE;
 }
