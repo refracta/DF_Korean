@@ -1,8 +1,37 @@
 ﻿#include <stdio.h>
 #include <windows.h>
+#include <tlhelp32.h>
+#include <stdbool.h>
+#include <string.h>
 
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
+
+bool IsModuleLoaded(DWORD processId, const char* moduleName)
+{
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    MODULEENTRY32 moduleEntry;
+    moduleEntry.dwSize = sizeof(MODULEENTRY32);
+
+    if (!Module32First(snapshot, &moduleEntry)) {
+        CloseHandle(snapshot);
+        return false;
+    }
+
+    do {
+        if (_stricmp(moduleEntry.szModule, moduleName) == 0) {
+            CloseHandle(snapshot);
+            return true;
+        }
+    } while (Module32Next(snapshot, &moduleEntry));
+
+    CloseHandle(snapshot);
+    return false;
+}
 
 
 int main()
@@ -72,7 +101,9 @@ int main()
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
 
-    if (exitCode == 0) {
+    bool dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME);
+
+    if (exitCode == 0 && !dllLoaded) {
         printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
         printf(" -> LoadLibrary returned NULL.\n");
         printf(" -> Possible Causes:\n");
@@ -86,7 +117,12 @@ int main()
         return 1;
     }
 
-    printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    if (exitCode == 0 && dllLoaded) {
+        printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
+    }
+    else {
+        printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    }
 
     CloseHandle(hThread);
     VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
