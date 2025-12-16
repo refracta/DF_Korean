@@ -33,6 +33,19 @@ bool IsModuleLoaded(DWORD processId, const char* moduleName)
     return false;
 }
 
+bool WaitForModuleLoaded(DWORD processId, const char* moduleName, DWORD attempts, DWORD delayMs)
+{
+    for (DWORD i = 0; i < attempts; ++i) {
+        if (IsModuleLoaded(processId, moduleName)) {
+            return true;
+        }
+
+        Sleep(delayMs);
+    }
+
+    return false;
+}
+
 
 int main()
 {
@@ -101,7 +114,7 @@ int main()
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
 
-    bool dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME);
+    bool dllLoaded = WaitForModuleLoaded(pi.dwProcessId, MY_DLL_NAME, 20, 50);
 
     if (exitCode == 0 && !dllLoaded) {
         printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
@@ -109,6 +122,7 @@ int main()
         printf(" -> Possible Causes:\n");
         printf("    1. Missing Dependencies (Is MinHook.x64.dll in the folder?)\n");
         printf("    2. Architecture Mismatch (Did you compile Launcher/DLL as x64?)\n");
+        printf(" -> Module scan: DLL not detected after retries.\n");
 
         CloseHandle(hThread);
         VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
@@ -119,6 +133,9 @@ int main()
 
     if (exitCode == 0 && dllLoaded) {
         printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
+    }
+    else if (dllLoaded) {
+        printf(" - Injection Result: SUCCESS (Handle: 0x%X, module detected via snapshot)\n", exitCode);
     }
     else {
         printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
