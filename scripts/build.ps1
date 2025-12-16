@@ -219,7 +219,7 @@ function Resolve-FreetypeDll {
     }
   }
 
-  $extraDlls = $extraSet.ToArray() | Where-Object { $_ -ne $dllPath }
+  $extraDlls = @($extraSet) | Where-Object { $_ -ne $dllPath }
 
   return [pscustomobject]@{
     Path      = $dllPath
