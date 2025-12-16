@@ -193,7 +193,7 @@ function Resolve-FreetypeDll {
     throw "vcpkg not found. Install vcpkg (or set VCPKG_INSTALLATION_ROOT) so build.ps1 can fetch a Release freetype.dll."
   }
 
-  & $vcpkgExe install "freetype:$triplet" --no-default-features | Out-Host
+  & $vcpkgExe install "freetype:$triplet" | Out-Host
   if ($LASTEXITCODE -ne 0) {
     throw "vcpkg install failed (exit=$LASTEXITCODE)."
   }
