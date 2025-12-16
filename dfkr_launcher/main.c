@@ -272,6 +272,45 @@ int main()
         return 1;
     }
 
+    // Ensure the target process can resolve dependencies from the DLL's directory
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    FARPROC pSetDllDirectory = GetProcAddress(kernel32, "SetDllDirectoryA");
+    if (pSetDllDirectory) {
+        void* pRemoteDir = VirtualAllocEx(pi.hProcess, NULL, strlen(dllDir) + 1, MEM_COMMIT, PAGE_READWRITE);
+        if (!pRemoteDir) {
+            printf("[Error] Memory Allocation failed while preparing DLL directory.\n");
+            TerminateProcess(pi.hProcess, 1);
+            return 1;
+        }
+
+        if (!WriteProcessMemory(pi.hProcess, pRemoteDir, (void*)dllDir, strlen(dllDir) + 1, NULL)) {
+            printf("[Error] WriteProcessMemory failed while setting DLL directory.\n");
+            VirtualFreeEx(pi.hProcess, pRemoteDir, 0, MEM_RELEASE);
+            TerminateProcess(pi.hProcess, 1);
+            return 1;
+        }
+
+        HANDLE hDirThread = CreateRemoteThread(pi.hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pSetDllDirectory, pRemoteDir, 0, NULL);
+        if (!hDirThread) {
+            printf("[Error] CreateRemoteThread failed when setting DLL directory.\n");
+            VirtualFreeEx(pi.hProcess, pRemoteDir, 0, MEM_RELEASE);
+            TerminateProcess(pi.hProcess, 1);
+            return 1;
+        }
+
+        WaitForSingleObject(hDirThread, INFINITE);
+        DWORD dirExit = 0;
+        GetExitCodeThread(hDirThread, &dirExit);
+        CloseHandle(hDirThread);
+        VirtualFreeEx(pi.hProcess, pRemoteDir, 0, MEM_RELEASE);
+
+        if (dirExit == 0) {
+            printf("[Error] Failed to set DLL directory inside the target process; dependency resolution may be blocked.\n");
+            TerminateProcess(pi.hProcess, 1);
+            return 1;
+        }
+    }
+
     void* pRemoteBuf = VirtualAllocEx(pi.hProcess, NULL, strlen(full_dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
     if (!pRemoteBuf) {
         printf("[Error] Memory Allocation failed.\n");

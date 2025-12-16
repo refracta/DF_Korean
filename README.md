@@ -9,6 +9,7 @@ Dwarf fortress korean Project
   - 런처가 출력하는 "Dependency scan" 목록에서 `MISSING` 항목이 없는지 확인하세요. 발견되면 게임 폴더에 DLL을 복사합니다.
   - `api-ms-win-*` 또는 `ext-ms-win-*`로 시작하는 항목은 윈도우가 내부적으로 제공하는 API Set 이며 실제 파일이 없어도 됩니다.
   - `MinHook.x64.dll`처럼 지연 로드되거나 코드에서 동적으로 로드하는 DLL은 import table에 없을 수 있으므로, 런처가 별도로 존재 여부를 검사합니다.
+  - 런처가 게임 프로세스 안에서 `SetDllDirectoryA(게임 폴더)`를 먼저 호출해 DLL 폴더를 검색 경로에 추가하므로, 의존 DLL을 게임 폴더에 두면 로더가 찾기 더 쉽습니다.
   - `Dwarf_hook.dll`과 함께 `MinHook.x64.dll` 등 의존 DLL이 같은 폴더에 있는지.
   - 런처와 DLL이 모두 x64로 빌드됐는지.
   - `LoadLibrary`가 `0`을 반환하고 스냅샷에서도 모듈이 보이지 않으면 런처가 즉시 실패로 종료합니다. 이 경우 의존성, 권한(관리자) 또는 보안 도구 차단을 점검하세요.
