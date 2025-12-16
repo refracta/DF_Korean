@@ -203,14 +203,23 @@ function Resolve-FreetypeDll {
   $dllPath = Join-Path $binDir 'freetype.dll'
   Assert-FileExists $dllPath
 
-  $extraDlls = @()
-  foreach ($dep in (Get-PeImportDllNames -Path $dllPath)) {
-    if ($dep -match '^(api-ms-win|ext-ms-win)-') { continue }
-    $depPath = Join-Path $binDir $dep
-    if (Test-Path -LiteralPath $depPath) {
-      $extraDlls += $depPath
+  $extraSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $queue = [System.Collections.Generic.Queue[string]]::new()
+  $queue.Enqueue($dllPath)
+
+  while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    foreach ($dep in (Get-PeImportDllNames -Path $current)) {
+      if ($dep -match '^(api-ms-win|ext-ms-win)-') { continue }
+      $depPath = Join-Path $binDir $dep
+      if (-not (Test-Path -LiteralPath $depPath)) { continue }
+      if ($extraSet.Add($depPath)) {
+        $queue.Enqueue($depPath)
+      }
     }
   }
+
+  $extraDlls = $extraSet.ToArray() | Where-Object { $_ -ne $dllPath }
 
   return [pscustomobject]@{
     Path      = $dllPath
