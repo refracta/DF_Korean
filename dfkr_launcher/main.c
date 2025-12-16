@@ -1,8 +1,37 @@
 ﻿#include <stdio.h>
 #include <windows.h>
+#include <tlhelp32.h>
+#include <stdbool.h>
+#include <string.h>
 
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
+
+bool IsModuleLoaded(DWORD processId, const char* moduleName)
+{
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    MODULEENTRY32 moduleEntry;
+    moduleEntry.dwSize = sizeof(MODULEENTRY32);
+
+    if (!Module32First(snapshot, &moduleEntry)) {
+        CloseHandle(snapshot);
+        return false;
+    }
+
+    do {
+        if (_stricmp(moduleEntry.szModule, moduleName) == 0) {
+            CloseHandle(snapshot);
+            return true;
+        }
+    } while (Module32Next(snapshot, &moduleEntry));
+
+    CloseHandle(snapshot);
+    return false;
+}
 
 
 int main()
@@ -72,21 +101,28 @@ int main()
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
 
-    if (exitCode == 0) {
-        printf("\n[CRITICAL ERROR] Injection FAILED inside the game!\n");
-        printf(" -> LoadLibrary returned NULL.\n");
-        printf(" -> Possible Causes:\n");
-        printf("    1. Missing Dependencies (Is MinHook.x64.dll in the folder?)\n");
-        printf("    2. Architecture Mismatch (Did you compile Launcher/DLL as x64?)\n");
-
-        CloseHandle(hThread);
-        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
-        TerminateProcess(pi.hProcess, 1);
-        system("pause");
-        return 1;
+    bool dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME);
+    if (exitCode == 0 && !dllLoaded) {
+        // Some Windows 10/11 systems return 0 from LoadLibraryA despite success
+        // and may need a short delay before the module appears in snapshots.
+        for (int i = 0; i < 5 && !dllLoaded; ++i) {
+            Sleep(100);
+            dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME);
+        }
     }
 
-    printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    if (exitCode == 0) {
+        if (dllLoaded) {
+            printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
+        }
+        else {
+            printf(" - Injection Result: POSSIBLE SUCCESS (LoadLibrary returned 0, module not found yet)\n");
+            printf("   -> Continuing startup. If the DLL isn't working, check dependencies/architecture.\n");
+        }
+    }
+    else {
+        printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
+    }
 
     CloseHandle(hThread);
     VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
