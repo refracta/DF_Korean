@@ -9,6 +9,80 @@
 # define TARGET_EXE "Dwarf Fortress.exe"
 # define MY_DLL_NAME "Dwarf_hook.dll"
 
+#pragma pack(push, 1)
+typedef struct RemoteLoadContext {
+    FARPROC pLoadLibraryA;
+    FARPROC pGetLastError;
+    char dllPath[MAX_PATH];
+    HMODULE module;
+    DWORD lastError;
+} RemoteLoadContext;
+#pragma pack(pop)
+
+#define RCTX_LOADLIB_OFF 0
+#define RCTX_GETLAST_OFF 8
+#define RCTX_DLLPATH_OFF 16
+#define RCTX_MODULE_OFF (RCTX_DLLPATH_OFF + MAX_PATH)
+#define RCTX_LASTERR_OFF (RCTX_MODULE_OFF + sizeof(HMODULE))
+
+void WriteDisp32(BYTE* out, DWORD value)
+{
+    out[0] = (BYTE)(value & 0xFF);
+    out[1] = (BYTE)((value >> 8) & 0xFF);
+    out[2] = (BYTE)((value >> 16) & 0xFF);
+    out[3] = (BYTE)((value >> 24) & 0xFF);
+}
+
+size_t BuildLoadShellcode(BYTE* out)
+{
+    // x64 stub to call LoadLibraryA(path) and store HMODULE + GetLastError into RemoteLoadContext
+    size_t i = 0;
+    out[i++] = 0x53;                         // push rbx
+    out[i++] = 0x48; out[i++] = 0x83; out[i++] = 0xEC; out[i++] = 0x20; // sub rsp, 0x20 (shadow space)
+    out[i++] = 0x48; out[i++] = 0x89; out[i++] = 0xCB; // mov rbx, rcx (context ptr)
+    out[i++] = 0x48; out[i++] = 0x8D; out[i++] = 0x8B; // lea rcx, [rbx + DLLPath]
+    WriteDisp32(&out[i], RCTX_DLLPATH_OFF); i += 4;
+    out[i++] = 0xFF; out[i++] = 0x93; // call qword ptr [rbx + LoadLibrary]
+    WriteDisp32(&out[i], RCTX_LOADLIB_OFF); i += 4;
+    out[i++] = 0x48; out[i++] = 0x89; out[i++] = 0x83; // mov [rbx + Module], rax
+    WriteDisp32(&out[i], RCTX_MODULE_OFF); i += 4;
+    out[i++] = 0xFF; out[i++] = 0x93; // call qword ptr [rbx + GetLastError]
+    WriteDisp32(&out[i], RCTX_GETLAST_OFF); i += 4;
+    out[i++] = 0x89; out[i++] = 0x83; // mov dword ptr [rbx + LastError], eax
+    WriteDisp32(&out[i], RCTX_LASTERR_OFF); i += 4;
+    out[i++] = 0x48; out[i++] = 0x83; out[i++] = 0xC4; out[i++] = 0x20; // add rsp, 0x20
+    out[i++] = 0x5B; // pop rbx
+    out[i++] = 0xC3; // ret
+    return i;
+}
+
+void PrintLastErrorText(DWORD error)
+{
+    char* msg = NULL;
+    DWORD size = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        error,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPSTR)&msg,
+        0,
+        NULL);
+    if (size && msg) {
+        // Trim trailing newlines for cleaner output
+        for (DWORD i = size; i > 0; --i) {
+            if (msg[i - 1] == '\r' || msg[i - 1] == '\n') {
+                msg[i - 1] = '\0';
+            } else {
+                break;
+            }
+        }
+        printf("   -> GetLastError: %lu (%s)\n", error, msg);
+        LocalFree(msg);
+    } else {
+        printf("   -> GetLastError: %lu\n", error);
+    }
+}
+
 bool RvaToPointer(DWORD rva, BYTE* base, PIMAGE_NT_HEADERS64 nt, BYTE** out)
 {
     PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(nt);
@@ -265,15 +339,18 @@ int main()
     printf(" - Process ID: %d\n", pi.dwProcessId);
 
     printf("[3] Injecting DLL...\n");
-    void* pLoadLibrary = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
-    if (!pLoadLibrary) {
-        printf("[Error] Failed to find LoadLibraryA.\n");
+
+    // Resolve required kernel32 exports up front
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    void* pLoadLibrary = (void*)GetProcAddress(kernel32, "LoadLibraryA");
+    FARPROC pGetLastError = GetProcAddress(kernel32, "GetLastError");
+    if (!pLoadLibrary || !pGetLastError) {
+        printf("[Error] Failed to find LoadLibraryA or GetLastError.\n");
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
     // Ensure the target process can resolve dependencies from the DLL's directory
-    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
     FARPROC pSetDllDirectory = GetProcAddress(kernel32, "SetDllDirectoryA");
     if (pSetDllDirectory) {
         void* pRemoteDir = VirtualAllocEx(pi.hProcess, NULL, strlen(dllDir) + 1, MEM_COMMIT, PAGE_READWRITE);
@@ -311,66 +388,89 @@ int main()
         }
     }
 
-    void* pRemoteBuf = VirtualAllocEx(pi.hProcess, NULL, strlen(full_dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
-    if (!pRemoteBuf) {
-        printf("[Error] Memory Allocation failed.\n");
+    RemoteLoadContext ctx;
+    ZeroMemory(&ctx, sizeof(ctx));
+    ctx.pLoadLibraryA = pLoadLibrary;
+    ctx.pGetLastError = pGetLastError;
+    strcpy_s(ctx.dllPath, MAX_PATH, full_dll_path);
+
+    BYTE shellcode[128] = {0};
+    size_t shellcodeSize = BuildLoadShellcode(shellcode);
+
+    SIZE_T remoteSize = sizeof(ctx) + shellcodeSize;
+    BYTE* remoteBlock = (BYTE*)VirtualAllocEx(pi.hProcess, NULL, remoteSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remoteBlock) {
+        printf("[Error] Memory Allocation failed for injection stub.\n");
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
-    if (!WriteProcessMemory(pi.hProcess, pRemoteBuf, (void*)full_dll_path, strlen(full_dll_path) + 1, NULL)) {
-        printf("[Error] WriteProcessMemory failed.\n");
+    if (!WriteProcessMemory(pi.hProcess, remoteBlock, &ctx, sizeof(ctx), NULL)) {
+        printf("[Error] WriteProcessMemory failed for context.\n");
+        VirtualFreeEx(pi.hProcess, remoteBlock, 0, MEM_RELEASE);
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
-    HANDLE hThread = CreateRemoteThread(pi.hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLibrary, pRemoteBuf, 0, NULL);
+    BYTE* remoteCode = remoteBlock + sizeof(ctx);
+    if (!WriteProcessMemory(pi.hProcess, remoteCode, shellcode, shellcodeSize, NULL)) {
+        printf("[Error] WriteProcessMemory failed for shellcode.\n");
+        VirtualFreeEx(pi.hProcess, remoteBlock, 0, MEM_RELEASE);
+        TerminateProcess(pi.hProcess, 1);
+        return 1;
+    }
+
+    HANDLE hThread = CreateRemoteThread(pi.hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)remoteCode, remoteBlock, 0, NULL);
     if (!hThread) {
         printf("[Error] CreateRemoteThread failed. (Anti-Virus blocking?)\n");
+        VirtualFreeEx(pi.hProcess, remoteBlock, 0, MEM_RELEASE);
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
     WaitForSingleObject(hThread, INFINITE);
+    CloseHandle(hThread);
 
-    DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
-
-    bool dllLoaded = false;
-    DWORD snapshotError = 0;
-    const int maxAttempts = 40; // ~2 seconds of retry time at 50ms each
-    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
-        dllLoaded = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME, &snapshotError);
-        if (dllLoaded || snapshotError == ERROR_BAD_LENGTH) {
-            // ERROR_BAD_LENGTH can occur when the snapshot is being modified; retry loop handles it.
-            if (dllLoaded) {
-                break;
-            }
-        }
-        Sleep(50);
+    RemoteLoadContext result;
+    ZeroMemory(&result, sizeof(result));
+    if (!ReadProcessMemory(pi.hProcess, remoteBlock, &result, sizeof(result), NULL)) {
+        printf("[Error] Failed to read injection results from target.\n");
+        VirtualFreeEx(pi.hProcess, remoteBlock, 0, MEM_RELEASE);
+        TerminateProcess(pi.hProcess, 1);
+        return 1;
     }
 
-    if (exitCode == 0 && !dllLoaded) {
-        printf(" - Injection Result: FAILURE (LoadLibrary returned 0 and module not visible)\n");
-        if (snapshotError != 0) {
-            printf("   -> Module snapshot error: GetLastError() = %lu (try running as administrator).\n", snapshotError);
-        }
+    VirtualFreeEx(pi.hProcess, remoteBlock, 0, MEM_RELEASE);
+
+    bool dllLoaded = result.module != NULL;
+    DWORD snapshotError = 0;
+    bool dllVisible = false;
+    if (dllLoaded) {
+        dllVisible = IsModuleLoaded(pi.dwProcessId, MY_DLL_NAME, &snapshotError);
+    }
+
+    if (!dllLoaded) {
+        printf(" - Injection Result: FAILURE (LoadLibrary returned NULL)\n");
+        PrintLastErrorText(result.lastError);
         printf("   -> Check architecture matches (both launcher/DLL built as x64).\n");
         printf("   -> Ensure MinHook.x64.dll and other dependencies are in the same folder.\n");
         printf("   -> Security software may block injection; try whitelisting.\n");
-        CloseHandle(hThread);
-        VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
         TerminateProcess(pi.hProcess, 1);
         system("pause");
         return 1;
-    } else if (exitCode == 0 && dllLoaded) {
-        printf(" - Injection Result: SUCCESS (LoadLibrary returned 0, module detected via snapshot)\n");
-    } else {
-        printf(" - Injection Result: SUCCESS (Handle: 0x%X)\n", exitCode);
     }
 
-    CloseHandle(hThread);
-    VirtualFreeEx(pi.hProcess, pRemoteBuf, 0, MEM_RELEASE);
+    if (!dllVisible) {
+        if (snapshotError != 0) {
+            printf(" - Injection Result: SUCCESS (module handle 0x%p, snapshot error %lu)\n", result.module, snapshotError);
+            printf("   -> Module snapshot error suggests permissions or interference.\n");
+        } else {
+            printf(" - Injection Result: SUCCESS (module handle 0x%p, not visible via snapshot)\n", result.module);
+            printf("   -> Module may be hidden by security software; verify in Process Explorer.\n");
+        }
+    } else {
+        printf(" - Injection Result: SUCCESS (Handle: 0x%p)\n", result.module);
+    }
 
     printf("[4] Resuming Game...\n");
     ResumeThread(pi.hThread);
